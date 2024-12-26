@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   Container,
   Typography,
@@ -60,17 +60,42 @@ const GmailSummary = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const isAuthed = await googleAuthService.checkAuthStatus();
+        if (isAuthed) {
+          setIsAuthenticated(true);
+          await fetchEmails();
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+      }
+    };
+
+    checkAuth();
+  }, []);
+
+  const handleLogout = () => {
+    googleAuthService.logout();
+    setIsAuthenticated(false);
+    setEmails([]);
+  };
+
   const handleAuthClick = async () => {
     try {
       setLoading(true);
       setError(null);
-
       await googleAuthService.requestAccessToken();
       setIsAuthenticated(true);
       await fetchEmails();
     } catch (err) {
       console.error('Auth error:', err);
-      setError('Authentication failed. Please try again.');
+      if (err?.error === 'popup_closed_by_user') {
+        setError('Sign-in cancelled. Please try again.');
+      } else {
+        setError('Authentication failed. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -82,17 +107,28 @@ const GmailSummary = () => {
     try {
       setLoading(true);
       setError(null);
+      setEmails([]);
 
       const fetchedEmails = await googleAuthService.fetchEmails();
-      setEmails(fetchedEmails);
+      console.log({ fetchedEmails });
+      const uniqueEmails = fetchedEmails.reduce((acc, email) => {
+        acc[email.id] = email;
+        return acc;
+      }, {});
+
+      setEmails(Object.values(uniqueEmails));
     } catch (err) {
       console.error('Fetch error:', err);
-      setError('Failed to fetch emails. Please try again.');
+      if (err.message === 'Authentication expired') {
+        setIsAuthenticated(false);
+        setError('Your session has expired. Please sign in again.');
+      } else {
+        setError('Failed to fetch emails. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
   }, [isAuthenticated]);
-
   return (
     <Box
       sx={{
@@ -112,7 +148,14 @@ const GmailSummary = () => {
           <Typography variant="h6" component="div" sx={{ flexGrow: 1, fontWeight: 600 }}>
             Gmail Summary Assistant
           </Typography>
-          {isAuthenticated && <EmailCount icon={<EmailIcon />} label={`${emails.length} unread`} size="medium" />}
+          {isAuthenticated && (
+            <>
+              <EmailCount icon={<EmailIcon />} label={`${emails.length} unread`} size="medium" sx={{ mr: 2 }} />
+              <Button color="inherit" onClick={handleLogout} sx={{ textTransform: 'none' }}>
+                Logout
+              </Button>
+            </>
+          )}
         </Toolbar>
       </AppBar>
 
