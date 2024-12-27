@@ -5,7 +5,6 @@ import {
   Button,
   Box,
   Alert,
-  Card,
   CardContent,
   CircularProgress,
   AppBar,
@@ -16,49 +15,25 @@ import {
   Divider,
   useTheme,
 } from '@mui/material';
-import { styled } from '@mui/material/styles';
 import EmailIcon from '@mui/icons-material/Email';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import PersonOutlineIcon from '@mui/icons-material/PersonOutline';
+import ReplyIcon from '@mui/icons-material/Reply';
+import AssignmentIcon from '@mui/icons-material/Assignment';
 import { googleAuthService } from './services/googleAuthService';
-
-const StyledCard = styled(Card)(({ theme }) => ({
-  backdropFilter: 'blur(10px)',
-  border: `1px solid ${theme.palette.mode === 'light' ? 'rgba(255, 255, 255, 0.12)' : 'rgba(255, 255, 255, 0.05)'}`,
-  transition: 'transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
-  '&:hover': {
-    transform: 'translateY(-4px)',
-  },
-}));
-
-const EmailCount = styled(Chip)(({ theme }) => ({
-  background: 'rgba(255, 255, 255, 0.2)',
-  color: '#ffffff',
-  fontWeight: 600,
-  backdropFilter: 'blur(10px)',
-  '& .MuiChip-icon': {
-    color: '#ffffff',
-  },
-}));
-
-const formatDate = (dateString) => {
-  if (!dateString) return '';
-  const date = new Date(dateString);
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
-};
+import { openAiService } from './services/openAiService';
+import { ActionChip, EmailCount, StyledCard, SummarySection } from './StyledComponents';
+import { formatDate } from './utils';
 
 const GmailSummary = () => {
   const theme = useTheme();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [emails, setEmails] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState(null);
+  const [summaries, setSummaries] = useState({});
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -101,6 +76,36 @@ const GmailSummary = () => {
     }
   };
 
+  const analyzeEmails = async (emailsToAnalyze) => {
+    setAnalyzing(true);
+    try {
+      const batchSize = 3;
+      const newSummaries = {};
+
+      for (let i = 0; i < emailsToAnalyze.length; i += batchSize) {
+        const batch = emailsToAnalyze.slice(i, i + batchSize);
+        const batchPromises = batch.map(async (email) => {
+          if (!summaries[email.id]) {
+            try {
+              const summary = await openAiService.summarizeEmail(email);
+              newSummaries[email.id] = summary;
+              setSummaries((prev) => ({ ...prev, [email.id]: summary }));
+            } catch (error) {
+              console.error(`Failed to analyze email ${email.id}:`, error);
+            }
+          }
+        });
+
+        await Promise.all(batchPromises);
+      }
+    } catch (err) {
+      console.error('Analysis error:', err);
+      setError('Failed to analyze some emails. Retrying...');
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
   const fetchEmails = useCallback(async () => {
     if (!isAuthenticated) return;
 
@@ -110,13 +115,8 @@ const GmailSummary = () => {
       setEmails([]);
 
       const fetchedEmails = await googleAuthService.fetchEmails();
-      console.log({ fetchedEmails });
-      const uniqueEmails = fetchedEmails.reduce((acc, email) => {
-        acc[email.id] = email;
-        return acc;
-      }, {});
-
-      setEmails(Object.values(uniqueEmails));
+      setEmails(fetchedEmails);
+      await analyzeEmails(fetchedEmails);
     } catch (err) {
       console.error('Fetch error:', err);
       if (err.message === 'Authentication expired') {
@@ -129,6 +129,112 @@ const GmailSummary = () => {
       setLoading(false);
     }
   }, [isAuthenticated]);
+
+  const renderEmailCard = (email) => {
+    const summary = summaries[email.id];
+    const isAnalyzing = analyzing && !summary;
+
+    const headers = email.payload.headers;
+    const subject = headers.find((h) => h.name === 'Subject')?.value || 'No Subject';
+    const from = headers.find((h) => h.name === 'From')?.value || 'Unknown';
+    const to = headers.find((h) => h.name === 'To')?.value || '';
+    const date = headers.find((h) => h.name === 'Date')?.value;
+
+    return (
+      <StyledCard key={email.id}>
+        <CardContent sx={{ p: 3 }}>
+          <Typography variant="h6" gutterBottom sx={{ wordBreak: 'break-word' }}>
+            {subject}
+          </Typography>
+
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mb: 2 }}>
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+              <Chip
+                icon={<PersonOutlineIcon />}
+                label={from}
+                variant="filled"
+                size="medium"
+                sx={{ maxWidth: '100%' }}
+              />
+              <Chip icon={<AccessTimeIcon />} label={formatDate(date)} variant="filled" size="medium" />
+              {summary?.needsResponse && <ActionChip icon={<ReplyIcon />} label="Needs Response" size="medium" />}
+            </Box>
+            {to && (
+              <Typography variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                To: {to}
+              </Typography>
+            )}
+          </Box>
+
+          <Divider />
+
+          <Typography color="text.secondary" sx={{ mt: 2, mb: 2 }}>
+            {email.snippet}
+          </Typography>
+
+          <Divider />
+
+          {isAnalyzing ? (
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 2,
+                color: 'text.secondary',
+                mt: 2,
+              }}
+            >
+              <CircularProgress size={20} />
+              <Typography>Analyzing email content...</Typography>
+            </Box>
+          ) : summary ? (
+            <SummarySection>
+              <Typography
+                variant="subtitle1"
+                color="primary"
+                gutterBottom
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                }}
+              >
+                <AssignmentIcon fontSize="small" />
+                AI Summary
+              </Typography>
+              <Typography color="text.primary">{summary.mainPoints}</Typography>
+
+              {summary.actionItems.length > 0 && (
+                <Box sx={{ mt: 2 }}>
+                  <Typography variant="subtitle2" color="warning.main" gutterBottom>
+                    Action Items:
+                  </Typography>
+                  {summary.actionItems.map((item, index) => (
+                    <Typography
+                      key={index}
+                      color="text.secondary"
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'baseline',
+                        gap: 1,
+                        ml: 2,
+                        '&:before': {
+                          content: '"•"',
+                          color: theme.palette.warning.main,
+                        },
+                      }}
+                    >
+                      {item}
+                    </Typography>
+                  ))}
+                </Box>
+              )}
+            </SummarySection>
+          ) : null}
+        </CardContent>
+      </StyledCard>
+    );
+  };
   return (
     <Box
       sx={{
@@ -230,43 +336,7 @@ const GmailSummary = () => {
             </Box>
 
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              {emails.map((email) => (
-                <StyledCard key={email.id}>
-                  <CardContent sx={{ p: 3 }}>
-                    <Typography variant="h6" gutterBottom>
-                      {email.payload.headers.find((h) => h.name === 'Subject')?.value || 'No Subject'}
-                    </Typography>
-                    <Divider sx={{ my: 2 }} />
-                    <Box
-                      sx={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        flexWrap: 'wrap',
-                        gap: 1,
-                      }}
-                    >
-                      <Chip
-                        icon={<PersonOutlineIcon />}
-                        label={email.payload.headers.find((h) => h.name === 'From')?.value || 'Unknown'}
-                        variant="filled"
-                        size="medium"
-                      />
-                      <Chip
-                        icon={<AccessTimeIcon />}
-                        label={formatDate(email.payload.headers.find((h) => h.name === 'Date')?.value)}
-                        variant="filled"
-                        size="medium"
-                      />
-                    </Box>
-                    {email.snippet && (
-                      <Typography color="text.secondary" sx={{ mt: 2 }}>
-                        {email.snippet}
-                      </Typography>
-                    )}
-                  </CardContent>
-                </StyledCard>
-              ))}
+              {emails.map(renderEmailCard)}
               {emails.length === 0 && !loading && (
                 <Paper
                   elevation={0}
@@ -275,7 +345,9 @@ const GmailSummary = () => {
                     textAlign: 'center',
                     borderRadius: 3,
                     bgcolor: 'background.paper',
-                    border: `1px solid ${theme.palette.mode === 'light' ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.05)'}`,
+                    border: `1px solid ${
+                      theme.palette.mode === 'light' ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.05)'
+                    }`,
                   }}
                 >
                   <Typography color="text.secondary">No unread emails found</Typography>
